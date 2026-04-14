@@ -78,7 +78,7 @@ export function createExtractRouter(jobQueue: JobQueue): Router {
       try {
         const file = req.file;
         const mode = (req.query.mode as string) || 'sync';
-        const sessionId = (req.body.sessionId as string) || uuidv4();
+        const sessionId = (req.query.sessionId as string) || (req.body.sessionId as string) || uuidv4();
         const fileHash = computeSHA256(file.buffer);
 
         // Ensure session exists

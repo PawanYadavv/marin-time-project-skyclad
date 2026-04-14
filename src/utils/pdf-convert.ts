@@ -1,13 +1,35 @@
 /**
- * Pure Node.js PDF-to-image conversion using pdf-img-convert (pdfjs-based).
- * Zero external system dependencies — no poppler, imagemagick, etc.
+ * PDF-to-image conversion using pdfjs-dist v3 + node-canvas.
  *
  * For providers that don't accept PDFs (OpenAI, Groq, Mistral, Ollama),
  * we render the first page of the PDF to a PNG image.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const pdfImgConvert = require('pdf-img-convert');
+/* eslint-disable @typescript-eslint/no-var-requires */
+const { createCanvas } = require('canvas');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+
+// Disable worker thread — run rendering on main thread
+pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+
+/**
+ * Custom canvas factory for pdfjs-dist to use node-canvas.
+ */
+class NodeCanvasFactory {
+  create(width: number, height: number) {
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext('2d');
+    return { canvas, context };
+  }
+  reset(canvasAndContext: { canvas: { width: number; height: number }; context: unknown }, width: number, height: number) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+  destroy(canvasAndContext: { canvas: null | unknown; context: null | unknown }) {
+    canvasAndContext.canvas = null;
+    canvasAndContext.context = null;
+  }
+}
 
 export async function ensureImageBuffer(
   buffer: Buffer,
@@ -38,15 +60,32 @@ export async function ensureImageBuffer(
 }
 
 async function convertPdfToPng(pdfBuffer: Buffer): Promise<Buffer | null> {
-  // Convert only the first page, at 2x scale for good quality
-  const pages: Uint8Array[] = await pdfImgConvert.convert(pdfBuffer, {
-    scale: 2.0,
-    page_numbers: [1],
-  });
+  const data = new Uint8Array(pdfBuffer);
+  const doc = await pdfjsLib.getDocument({
+    data,
+    disableFontFace: true,
+    isEvalSupported: false,
+  }).promise;
 
-  if (pages.length === 0) {
-    return null;
-  }
+  const page = await doc.getPage(1);
 
-  return Buffer.from(pages[0]);
+  // Render at 2x scale for good quality
+  const scale = 2.0;
+  const viewport = page.getViewport({ scale });
+  const canvasFactory = new NodeCanvasFactory();
+  const { canvas, context } = canvasFactory.create(
+    Math.floor(viewport.width),
+    Math.floor(viewport.height)
+  );
+
+  await page.render({
+    canvasContext: context,
+    viewport,
+    canvasFactory,
+  }).promise;
+
+  // Export canvas to PNG buffer
+  const pngBuffer: Buffer = canvas.toBuffer('image/png');
+  doc.destroy();
+  return pngBuffer;
 }
